@@ -53,23 +53,6 @@ public class GameController {
 
     return diplomacy;
 
-//    List<DiplomacyAction> diplomacy = new ArrayList<>();
-//
-//    // Example: pick enemy who has lowest HP as temporary ally
-//    EnemyTower allyCandidate = state.enemyTowers.stream()
-//        .min(Comparator.comparingInt(e -> e.hp))
-//        .orElse(null);
-//
-//    if (allyCandidate != null) {
-//      DiplomacyAction peace = new DiplomacyAction();
-//      peace.setAllyId(allyCandidate.playerId);
-//      diplomacy.add(peace);
-//
-//      // Store ally in memory for combat
-//      allies.add(allyCandidate.playerId);
-//    }
-//
-//    return diplomacy;
   }
 
   @PostMapping("/combat")
@@ -79,93 +62,10 @@ public class GameController {
     allies.removeIf(id -> state.enemyTowers.stream()
         .noneMatch(e -> e.playerId == id && e.hp > 0));
 
-    return smartCombatt(state, allies);
+    return smartCombat(state, allies);
   }
 
   public List<CombatAction> smartCombat(GameState state, Set<Integer> allies) {
-
-    List<CombatAction> actions = new ArrayList<>();
-
-    int myId = state.playerTower.playerId;
-    int currentArmor = state.playerTower.armor;
-    int resources = state.playerTower.resources;
-    int level = state.playerTower.level;
-    int turn = state.turn;
-
-    // --- 1️⃣ Determine if late-game ---
-    long aliveEnemies = state.enemyTowers.stream()
-        .filter(e -> e.hp > 0 && e.playerId != myId)
-        .count();
-
-    boolean ignoreAllies = (aliveEnemies <= 1 || turn > 25);
-    // ignore alliances if only 1 enemy left or fatigue phase
-
-    // --- 2️⃣ Calculate incoming damage ---
-    int incomingDamage = 0;
-    if (state.previousAttacks != null) {
-      for (PreviousAttack attack : state.previousAttacks) {
-        if (attack.action != null && attack.action.targetId == myId) {
-          incomingDamage += attack.action.troopCount;
-        }
-      }
-    }
-
-    // Optional: add fatigue damage after turn 25
-    if (turn > 25) {
-      int fatigueDamage = (turn - 25) * 2; // example scaling
-      incomingDamage += fatigueDamage;
-    }
-
-    // --- 3️⃣ Armor logic ---
-    int armorToBuild = Math.max(0, incomingDamage - currentArmor);
-    armorToBuild = Math.min(armorToBuild, resources);
-    if (armorToBuild > 0) {
-      CombatAction armor = new CombatAction();
-      armor.setType("armor");
-      armor.setAmount(armorToBuild);
-      actions.add(armor);
-      resources -= armorToBuild;
-    }
-
-    // --- 4️⃣ Upgrade logic ---
-    int upgradeCost = (int) Math.round(50 * Math.pow(1.75, level - 1));
-    if (resources >= upgradeCost) {
-      CombatAction upgrade = new CombatAction();
-      upgrade.setType("upgrade");
-      actions.add(upgrade);
-      resources -= upgradeCost;
-    }
-
-    // --- 5️⃣ Attack logic ---
-    List<EnemyTower> targets = state.enemyTowers.stream()
-        .filter(e -> e.playerId != myId)
-        .filter(e -> ignoreAllies || allies == null || !allies.contains(e.playerId))
-        .filter(e -> e.hp > 0)
-        .sorted(Comparator.comparingInt((EnemyTower e) -> e.hp)
-            .thenComparingInt(e -> e.level)) // weakest HP first
-        .collect(Collectors.toList());
-
-    for (EnemyTower enemy : targets) {
-      if (resources <= 0) break;
-
-      // Only send enough troops to kill, or use remaining resources
-      int troopCount = Math.min(resources, enemy.hp + enemy.armor);
-      if (troopCount <= 0) continue;
-
-      CombatAction attack = new CombatAction();
-      attack.setType("attack");
-      attack.setTargetId(enemy.playerId);
-      attack.setTroopCount(troopCount);
-
-      actions.add(attack);
-      resources -= troopCount;
-    }
-
-    return actions;
-  }
-
-
-  public List<CombatAction> smartCombatt(GameState state, Set<Integer> allies) {
 
     List<CombatAction> actions = new ArrayList<>();
 
@@ -192,17 +92,26 @@ public class GameController {
       }
     }
 
-    // Optional: fatigue damage after turn 25
+    // Fatigue damage after turn 25
     if (turn > 25) {
       int fatigueDamage = (turn - 25) * 2; // example scaling
       incomingDamage += fatigueDamage;
     }
 
-    // --- 3️⃣ Armor logic ---
-    // Only build armor if threat significant or not 1v1
-    if (!oneVsOne && incomingDamage > currentArmor / 2) {
-      int armorToBuild = Math.max(0, incomingDamage - currentArmor);
-      armorToBuild = Math.min(armorToBuild, resources);
+    // --- 3️⃣ Upgrade logic (early game focus) ---
+    int upgradeCost = (int) Math.round(50 * Math.pow(1.75, level - 1));
+    // Only upgrade if resources are enough and we are below level 3 (early game priority)
+    if (level < 3 && resources >= upgradeCost) {
+      CombatAction upgrade = new CombatAction();
+      upgrade.setType("upgrade");
+      actions.add(upgrade);
+      resources -= upgradeCost;
+    }
+
+    // --- 4️⃣ Armor logic ---
+    // Build armor only if threat is significant
+    if (incomingDamage > currentArmor / 2 && resources > 0) {
+      int armorToBuild = Math.min(Math.max(0, incomingDamage - currentArmor), resources);
       if (armorToBuild > 0) {
         CombatAction armor = new CombatAction();
         armor.setType("armor");
@@ -212,38 +121,32 @@ public class GameController {
       }
     }
 
-    // --- 4️⃣ Upgrade logic ---
-    int upgradeCost = (int) Math.round(50 * Math.pow(1.75, level - 1));
-    if (resources >= upgradeCost && (oneVsOne || resources - upgradeCost > 10)) {
-      CombatAction upgrade = new CombatAction();
-      upgrade.setType("upgrade");
-      actions.add(upgrade);
-      resources -= upgradeCost;
-    }
-
     // --- 5️⃣ Attack logic ---
-    List<EnemyTower> targets = state.enemyTowers.stream()
-        .filter(e -> e.playerId != myId)
-        .filter(e -> ignoreAllies || allies == null || !allies.contains(e.playerId))
-        .filter(e -> e.hp > 0)
-        .sorted(Comparator.<EnemyTower>comparingInt(
-                e -> e.hp + estimateIncomingDamage(e, state)) // predicted threat
-            .thenComparingInt(e -> -e.level)) // higher level first if tie
-        .collect(Collectors.toList());
+    // Attack only if level >= 3 OR surplus resources
+    if (level >= 3 && resources > 0) {
+      List<EnemyTower> targets = state.enemyTowers.stream()
+          .filter(e -> e.playerId != myId)
+          .filter(e -> ignoreAllies || allies == null || !allies.contains(e.playerId))
+          .filter(e -> e.hp > 0)
+          .sorted(Comparator.<EnemyTower>comparingInt(
+                  e -> e.hp + estimateIncomingDamage(e, state)) // predicted threat
+              .thenComparingInt(e -> -e.level)) // higher level first if tie
+          .collect(Collectors.toList());
 
-    for (EnemyTower enemy : targets) {
-      if (resources <= 0) break;
+      for (EnemyTower enemy : targets) {
+        if (resources <= 0) break;
 
-      int troopCount = Math.min(resources, enemy.hp + enemy.armor);
-      if (troopCount <= 0) continue;
+        int troopCount = Math.min(resources, enemy.hp + enemy.armor);
+        if (troopCount <= 0) continue;
 
-      CombatAction attack = new CombatAction();
-      attack.setType("attack");
-      attack.setTargetId(enemy.playerId);
-      attack.setTroopCount(troopCount);
+        CombatAction attack = new CombatAction();
+        attack.setType("attack");
+        attack.setTargetId(enemy.playerId);
+        attack.setTroopCount(troopCount);
 
-      actions.add(attack);
-      resources -= troopCount;
+        actions.add(attack);
+        resources -= troopCount;
+      }
     }
 
     return actions;
